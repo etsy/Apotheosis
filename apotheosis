@@ -1,0 +1,172 @@
+import sys
+import argparse
+from select import select
+from oauth2client.client import GoogleCredentials
+import oauth2client
+from googleapiclient import discovery
+from termcolor import colored
+
+# to use these change the values,
+# and then run sudo `python setup.py install` to reinstall with the new values
+default_resource = ""
+default_role = ""
+default_member = ""
+default_duration = 300
+default_service_account = ""
+
+MAX_DURATION = 21000 #the highest value allowed by the API
+
+parser = argparse.ArgumentParser(description="Google Cloud Platform Security Tool")
+parser.add_argument(
+    "--member",
+    "-m",
+    default=default_member,
+    help="Entity to assign the permissions to.",
+)
+parser.add_argument(
+    "--role", "-r", default=default_role, help="Role to assign to the member"
+)
+parser.add_argument(
+    "--resource",
+    "-res",
+    default=default_resource,
+    help="Resource to assign the permissions on.",
+)
+parser.add_argument(
+    "--duration",
+    "-d",
+    default=default_duration,
+    help="Amount of time before revoking permissions. Maximum is 21000 seconds.",
+)
+parser.add_argument(
+    "--serviceAccount",
+    "-sa",
+    default=default_service_account,
+    help="The service account that will grant permissions.",
+)
+args = parser.parse_args()
+
+def get_token(serviceAccount):
+    try:
+        creds = GoogleCredentials.get_application_default()
+    except Exception as e:
+        print("Error getting application default credentials.")
+        sys.exit()
+    service = discovery.build("iamcredentials", "v1", credentials=creds)
+    scope = [
+        "https://www.googleapis.com/auth/iam",
+        "https://www.googleapis.com/auth/cloud-platform",
+    ]
+    serviceAccount = serviceAccount
+    name = "projects/-/serviceAccounts/" + serviceAccount
+    req = (
+        service.projects()
+        .serviceAccounts()
+        .generateAccessToken(name=name, body={"scope": scope})
+    )
+    res = req.execute()
+    return res["accessToken"]
+
+
+def add_role(role, member, resource, serviceAccount):
+    creds = oauth2client.client.AccessTokenCredentials(
+        get_token(serviceAccount), "apotheosis"
+    )
+    service = discovery.build("cloudresourcemanager", "v1", credentials=creds)
+    if str.isdigit(args.resource):  # given an organization id
+        resource = "organizations/" + resource
+        attr = getattr(service, "organizations")()
+    elif "folder" in args.resource:
+        service = discovery.build("cloudresourcemanager", "v2", credentials=creds)
+        resource = "folders/" + resource.split(":")[1]
+        attr = getattr(service, "folders")()
+    else:  # given a project or lower
+        attr = getattr(service, "projects")()
+    # first get the policy
+    request = attr.getIamPolicy(resource=resource, body={})
+    policy = request.execute()
+    # then modify it
+    policy_with_addition = modify_policy_add_member(policy, role, member)
+    if policy_with_addition.get("version"):
+        del policy_with_addition["version"]
+    if policy_with_addition.get("etag"):
+        del policy_with_addition["etag"]
+    add_request = attr.setIamPolicy(
+        resource=resource, body={"policy": policy_with_addition}
+    )
+    add_request.execute()
+    print colored("Added ", "green") + colored(args.role, "yellow") + " to " + colored(
+        args.member, "cyan"
+    ) + " for " + str(args.duration) + " seconds"
+    remove_role(policy_with_addition, role, member, resource, creds)
+    return True
+
+
+def remove_role(policy, role, member, resource, creds):
+    service = discovery.build("cloudresourcemanager", "v1", credentials=creds)
+    if str.isdigit(args.resource):  # given an organization id
+        attr = getattr(service, "organizations")()
+    elif "folder" in args.resource:
+        service = discovery.build("cloudresourcemanager", "v2", credentials=creds)
+        resource = "folders/" + args.resource.split(":")[1]
+        attr = getattr(service, "folders")()
+    else:  # given a project or lower
+        attr = getattr(service, "projects")()
+    if float(args.duration) > MAX_DURATION:
+        args.duration = MAX_DURATION
+        print "Duration reduced to the maximum"
+    select([sys.stdin], [], [], float(args.duration))#TODO revoke on SIGINT
+    policy_with_removal = modify_policy_remove_member(policy, role, member)
+    if policy_with_removal.get("version"):
+        del policy_with_removal["version"]
+    if policy_with_removal.get("etag"):
+        del policy_with_removal["etag"]
+    try:
+        if not str.isdigit(args.resource):
+            remove_request = attr.setIamPolicy(
+                resource=resource, body={"policy": policy_with_removal}
+            )
+        else:
+            remove_request = attr.setIamPolicy(
+                resource=resource, body={"policy": policy_with_removal}
+            )
+        remove_request.execute()
+    except Exception as e:
+        print e
+        return
+    print colored("Removed ", "green") + colored(
+        args.role, "yellow"
+    ) + " from " + colored(args.member, "cyan")
+    return
+
+
+def modify_policy_add_member(policy, role, member):
+    try:
+        binding = next(b for b in policy["bindings"] if b["role"] == role)
+        binding["members"].append(member)
+    except:
+        policy["bindings"].append({u"role": role, u"members": [member]})
+    return policy
+
+
+def modify_policy_remove_member(policy, role, member):
+    for binding in policy["bindings"]:
+        if binding["role"] == role:
+            while member in binding["members"]:
+                del binding["members"][(binding["members"].index(member))]
+    return policy
+
+
+def get_current_user():
+    res = subprocess.check_output(
+        ['gcloud auth list --filter=status:ACTIVE --format="value(account)"'],
+        shell=True,
+    )
+    return res[:-1]
+
+if ":" not in args.member:
+    print "Make sure the member is specified with the user:, or serviceAccount:, etc. prefix"
+elif not "roles/" in args.role:
+    print "Make sure the role is specified with the roles/ or roles/x. prefix"
+else:
+    add_role(args.role, args.member, args.resource, args.serviceAccount)
