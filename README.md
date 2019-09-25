@@ -1,6 +1,6 @@
 # Apotheosis
 
-Apotheosis is a tool you can run in the command line to grant yourself temporary privileges which will expire after a specified amount of time. It is meant to allow high privilege users, who would otherwise have `Owner` or `Org Admin` roles, not to have any roles themselves except for `Service Account User` and `Service Account Token Creator` on a service account which will have the `Owner` role which would otherwise be assigned to these users.
+Apotheosis is a tool you can run in the command line to grant yourself temporary Google Cloud Platform (GCP) Identity and Access Management (IAM) privileges which will expire after a specified amount of time. It is meant to allow high privilege users, who would otherwise have `Owner` or `Org Admin` roles, not to have any roles themselves except for `Service Account User` and `Service Account Token Creator` on a service account which will have the `Owner` role which would otherwise be assigned to these users.
 
 To run the application:
 ```sh
